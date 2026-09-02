@@ -1,0 +1,63 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly canary against runner image / Windows build updates.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+# One run per ref: a newer push supersedes an in-flight run instead of
+# racing it (each run has its own VM, so this is about wasted Windows
+# minutes and confusing duplicate failures, not correctness).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit (linux + cross-compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Vet
+        run: go vet ./...
+      - name: Unit tests (race)
+        run: go test -race ./...
+      - name: Cross-compile windows/amd64
+        run: GOOS=windows GOARCH=amd64 go build ./...
+      - name: Cross-compile windows/arm64
+        run: GOOS=windows GOARCH=arm64 go build ./...
+      - name: Cross-compile windows/386 (stubs must still compile)
+        run: GOOS=windows GOARCH=386 go build ./...
+
+  windows:
+    name: windows (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest = Server 2022+ on amd64.
+        # windows-11-arm = Windows 11 on arm64 — validates the two-register
+        # GUID ABI that cannot be tested on amd64.
+        runner: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Vet
+        run: go vet ./...
+      # GitHub-hosted Windows runners execute elevated, so the integration
+      # tests (real snapshot create/read/delete) run rather than skip.
+      - name: Tests (including VSS integration)
+        run: go test -v -timeout 25m -cover ./...
+        env:
+          GODEBUG: invalidptr=1
